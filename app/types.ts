@@ -25,7 +25,6 @@ export interface LatestProgress {
 
 export interface Task {
   id: number;
-  sub_category_id: number;
   name: string;
   description: string;
   volume: number;
@@ -36,6 +35,8 @@ export interface Task {
   weight: number;
   created_at: string;
   updated_at: string;
-  sub_category?: SubCategory;
-  get_latest_progress?: LatestProgress;
+  sub_category_name: string;
+  category_name: string;
+  latest_progress: string;
+  latest_progress_date: string;
 }
