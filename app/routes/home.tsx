@@ -1,16 +1,19 @@
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "~/components/ui/card";
 import { Input } from "~/components/ui/input";
 import { ScrollArea } from "~/components/ui/scroll-area";
 import { useQueryState } from "nuqs";
 import { useDebouncedCallback } from "use-debounce";
 import type { Route } from "./+types/home";
 import { format } from "date-fns/format";
+import { createClient } from "~/lib/supabase";
+import ProgressCard from "~/components/ProgressCard";
+import CustomPagination from "~/components/CustomPagination";
+import { Card, CardContent } from "~/components/ui/card";
 
 export async function loader({ request }: Route.LoaderArgs) {
   const search = new URL(request.url).searchParams.get("search") || "";
   const page = Number(new URL(request.url).searchParams.get("page") || 0);
   const pagination = 10;
-  const offset = page * pagination; // Calculate offset for pagination
+  const offset = page * pagination;
 
   const supabase = await createClient();
   const { data, count } = await supabase
@@ -31,7 +34,8 @@ export async function loader({ request }: Route.LoaderArgs) {
       sub_category:sub_category_id (name, category:category_id (name)),
       progresses (
         value,
-        date
+        date,
+        note
       )
     `,
       { count: "exact" }
@@ -41,35 +45,62 @@ export async function loader({ request }: Route.LoaderArgs) {
     .ilike("name", `%${search}%`) // Case-insensitive search by task name
     .range(offset, offset + pagination - 1);
 
-  const transformedData = data?.map((task) => ({
-    ...task,
+  // Group tasks by sub_category
+  const groupedData = data?.reduce((acc, task) => {
     // @ts-ignore
-    sub_category_name: task.sub_category.name,
-    // @ts-ignore
-    category_name: task.sub_category.category.name,
-    latest_progress: task.progresses[0]?.value || null,
-    latest_progress_date: task.progresses[0]?.date || null,
-  }));
+    const subCategoryName = task.sub_category.name;
+    const categoryName = task.sub_category.category.name;
+
+    // Check if this sub-category already exists in the accumulator
+    const existingGroup = acc.find((group) => group.sub_category_name === subCategoryName);
+
+    if (existingGroup) {
+      existingGroup.tasks.push({
+        ...task,
+        latest_progress: task.progresses[0]?.value || null,
+        latest_progress_date: task.progresses[0]?.date || null,
+        note: task.progresses[0]?.note || null,
+      });
+    } else {
+      acc.push({
+        sub_category_name: subCategoryName,
+        category_name: categoryName,
+        tasks: [
+          {
+            ...task,
+            latest_progress: task.progresses[0]?.value || null,
+            latest_progress_date: task.progresses[0]?.date || null,
+            note: task.progresses[0]?.note || null,
+          },
+        ],
+      });
+    }
+
+    return acc;
+  }, []);
 
   const hasNextPage = count ? Math.floor(count / pagination) > page : false;
 
-  return { tasks: transformedData, hasNextPage };
+  return { tasks: groupedData, hasNextPage };
 }
 
 export async function clientAction({ request }: Route.ActionArgs) {
   const formData = await request.formData();
-  const progress = formData.get("progress");
   const task_id = formData.get("task_id");
+  const progress = formData.get("value");
+  const note = formData.get("note");
+
   const supabase = await createClient();
-  const s = await supabase.from("progresses").insert([
+  await supabase.from("progresses").insert([
     {
       task_id: Number(task_id),
       value: Number(progress),
+      note: note || "",
       date: format(new Date(), "yyyy-MM-dd"),
       updated_at: new Date().toISOString(),
     },
   ]);
-  return;
+  return true;
 }
 
 export default function Homepage({ loaderData }: Route.ComponentProps) {
@@ -87,74 +118,17 @@ export default function Homepage({ loaderData }: Route.ComponentProps) {
       <Input placeholder="Cari nama pesawat" defaultValue={search} onInput={onSearch} />
       <ScrollArea>
         {tasks.map((task) => (
-          <ProgressCard task={task} />
+          <div className="space-y-4">
+            <h1 className="bg-slate-200 py-2 px-4 font-bold rounded-lg text-sm">
+              {task.category_name}: {task.sub_category_name}
+            </h1>
+            {task.tasks.map((task) => (
+              <ProgressCard task={task} />
+            ))}
+          </div>
         ))}
         <CustomPagination />
       </ScrollArea>
     </div>
-  );
-}
-
-function ProgressCard({ task }: { task: Task }) {
-  const fetcher = useDebounceFetcher();
-
-  const onInput: React.FormEventHandler<HTMLInputElement> = (event) => {
-    fetcher.debounceSubmit(event.currentTarget.form, { method: "POST", debounceTimeout: 300 });
-  };
-
-  return (
-    <Card key={task.id} className="mb-4">
-      <CardHeader>
-        <CardTitle>{task.name}</CardTitle>
-        <CardDescription>{`${task.category_name} - ${task.sub_category_name}`}</CardDescription>
-        <CardContent className="flex h-full items-end justify-between px-0">
-          <div className="text-xs">Progress Terakhir: {task.latest_progress}</div>
-          <fetcher.Form method="post">
-            <input type="hidden" name="task_id" value={task.id} />
-            <Input
-              name="progress"
-              onInput={onInput}
-              defaultValue={task.latest_progress || 0}
-              className="w-14 text-sm font-medium"
-              max={100}
-            />
-          </fetcher.Form>
-        </CardContent>
-      </CardHeader>
-    </Card>
-  );
-}
-
-import { Pagination, PaginationContent, PaginationItem } from "~/components/ui/pagination";
-import { Button } from "~/components/ui/button";
-import { ChevronLeft, ChevronRight } from "lucide-react";
-import { Form, useFetcher, useLoaderData, useSubmit } from "react-router";
-import type { Task } from "~/types";
-import { useState } from "react";
-import { useDebounceFetcher } from "~/hooks/useDebounceFetcher";
-import { createClient } from "~/lib/supabase";
-
-export function CustomPagination() {
-  const { hasNextPage } = useLoaderData();
-  const [page, setPage] = useQueryState("page", { defaultValue: "0", shallow: false });
-  return (
-    <Pagination>
-      <PaginationContent>
-        {page !== "0" && (
-          <PaginationItem>
-            <Button size="icon" variant="ghost" onClick={() => setPage((page) => String(Number(page) - 1))}>
-              <ChevronLeft />
-            </Button>
-          </PaginationItem>
-        )}
-        {hasNextPage && (
-          <PaginationItem>
-            <Button size="icon" variant="ghost" onClick={() => setPage((page) => String(Number(page) + 1))}>
-              <ChevronRight />
-            </Button>
-          </PaginationItem>
-        )}
-      </PaginationContent>
-    </Pagination>
   );
 }

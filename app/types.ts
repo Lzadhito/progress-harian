@@ -39,4 +39,5 @@ export interface Task {
   category_name: string;
   latest_progress: string;
   latest_progress_date: string;
+  note: string;
 }
